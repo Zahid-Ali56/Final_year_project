@@ -1,0 +1,5 @@
+clip_local_model/
+database.db
+*.bin
+*.onnx
+*.pt
