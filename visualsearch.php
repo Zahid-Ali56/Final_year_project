@@ -16,40 +16,29 @@ if ($file_field && $_FILES[$file_field]['error'] == UPLOAD_ERR_OK) {
     $imageType = $_FILES[$file_field]['type'];
 
     // ------------------------------------------------------------------
-    // DYNAMIC MULTI-ENVIRONMENT ROUTING (Railway, Local & Fallback)
+    // FAST & ACCURATE MULTI-ENVIRONMENT DETECTION (Localhost vs Live)
     // ------------------------------------------------------------------
-    
-    // 1. Aap ka Railway Live Deployed Domain
-    $railway_domain = "https://finalyearproject-production-c2dc.up.railway.app"; 
-    
-    // 2. Local Python Server URL
     $local_domain = "http://127.0.0.1:5000";
+    $railway_domain = "https://finalyearproject-production-c2dc.up.railway.app";
+    
+    // Auto-Detect Environment based on Domain/Server Name
+    $server_host = strtolower($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '');
+    $is_local_env = (
+        strpos($server_host, 'localhost') !== false || 
+        strpos($server_host, '127.0.0.1') !== false
+    );
 
-    // Server health checking function
-    function check_service_alive($url) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_NOBODY, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        return ($code >= 200 && $code < 500);
-    }
-
-    // Auto-Routing Logic: Pehle Railway, phr Local Fallback
-    if (check_service_alive($railway_domain . "/")) {
-        $ai_url = $railway_domain . '/predict-image';
-    } elseif (check_service_alive($local_domain . "/")) {
+    if ($is_local_env) {
+        // Localhost testing ke liye local Python Flask server hit karein
         $ai_url = $local_domain . '/predict-image';
     } else {
-        // Direct Fallback to Railway
+        // Online live production site ke liye Railway API hit karein
         $ai_url = $railway_domain . '/predict-image';
     }
 
+    // ------------------------------------------------------------------
     // 1. Python AI Microservice ko cURL ke zariye image bhejna
+    // ------------------------------------------------------------------
     $ch = curl_init();
     $cfile = new CURLFile($imagePath, $imageType, $imageName);
     
@@ -57,60 +46,268 @@ if ($file_field && $_FILES[$file_field]['error'] == UPLOAD_ERR_OK) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, array('image' => $cfile));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 45); 
+    curl_setopt($ch, CURLOPT_TIMEOUT, 20); 
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
 
-    // SSL Verification Bypass for hosting compatibility
+    // SSL Verification Bypass (Online Server Security Compatibility)
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
     $response = curl_exec($ch);
+    $http_status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curl_error = curl_error($ch);
     curl_close($ch);
 
+    // ------------------------------------------------------------------
+    // 2. RESPONSE PARSING & 502/FAIL-SAFE FALLBACK HANDLING
+    // ------------------------------------------------------------------
     if ($curl_error) {
-        $error_message = "AI Service Connection Error: " . $curl_error;
+        $error_message = "AI Service Connection Error: AI server tak connection fail ho gaya. Details: " . htmlspecialchars($curl_error);
     } else {
         $data = json_decode($response, true);
 
-        // Debugging Response Keys
+        // Check karein agar HTTP Status 200 na ho ya JSON Parse error ho (e.g. 502 HTML page return hona)
+        if ($http_status !== 200 || !is_array($data)) {
+            // Agar local crash hua ho par server online ho, fallback option automatically run hoga
+            if ($is_local_env && !empty($railway_domain)) {
+                // Secondary Fallback Attempt on Railway Live Cloud
+                $ch_alt = curl_init();
+                curl_setopt($ch_alt, CURLOPT_URL, $railway_domain . '/predict-image');
+                curl_setopt($ch_alt, CURLOPT_POST, true);
+                curl_setopt($ch_alt, CURLOPT_POSTFIELDS, array('image' => $cfile));
+                curl_setopt($ch_alt, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch_alt, CURLOPT_TIMEOUT, 15);
+                curl_setopt($ch_alt, CURLOPT_SSL_VERIFYPEER, false);
+                curl_setopt($ch_alt, CURLOPT_SSL_VERIFYHOST, false);
+                
+                $response_alt = curl_exec($ch_alt);
+                $http_status_alt = curl_getinfo($ch_alt, CURLINFO_HTTP_CODE);
+                curl_close($ch_alt);
+
+                if ($http_status_alt === 200) {
+                    $data = json_decode($response_alt, true);
+                }
+            }
+        }
+
+        // Final Category Extraction
         $category_key = null;
-        if (isset($data['category'])) {
-            $category_key = $data['category'];
-        } elseif (isset($data['label'])) {
-            $category_key = $data['label'];
-        } elseif (isset($data['prediction'])) {
-            $category_key = $data['prediction'];
+        if (is_array($data)) {
+            if (isset($data['category'])) {
+                $category_key = $data['category'];
+            } elseif (isset($data['label'])) {
+                $category_key = $data['label'];
+            } elseif (isset($data['prediction'])) {
+                $category_key = $data['prediction'];
+            }
         }
 
         if (!empty($category_key)) {
             
-            // Low accuracy check
+            // Low accuracy / UNKNOWN Category handling
             if ($category_key === 'unknown') {
                 $error_message = "Image clear nahi hai ya product recognize nahi ho saka. Barah-e-karam koi doosri clear pic upload karein.";
             } else {
+                /** @var mysqli $conn */
                 $detected_tag = mysqli_real_escape_string($conn, $category_key);
                 $confidence = isset($data['confidence']) ? $data['confidence'] : (isset($data['score']) ? round($data['score'] * 100) : 0);
                 
-                // Search History Log
+                // Search History Logging
                 if (isset($_SESSION['user_id'])) {
                     $user_id = (int)$_SESSION['user_id'];
                     mysqli_query($conn, "INSERT INTO search_history (user_id, search_term) VALUES ($user_id, '$detected_tag')");
                 }
                 
-                // AI Category ke mutabiq DB query
+                // AI Category ke mutabiq Products Query Execution
                 $query = "SELECT * FROM products WHERE name LIKE '%$detected_tag%' OR description LIKE '%$detected_tag%' ORDER BY id DESC";
                 $result = mysqli_query($conn, $query);
             }
 
         } else {
-            $error_message = "AI API Response Error. Raw Response: " . htmlspecialchars(substr($response, 0, 150));
+            $error_message = "AI API Response Error (Code: " . $http_status . "). Server response read nahi ho saka.";
         }
     }
 } else {
     $error_message = "No image uploaded or upload error occurred. Please select an image using the camera button.";
 }
 ?>
+
+<style>
+/* Internal CSS for Visual Search Page */
+:root {
+    --primary-navy: #24426a;
+    --primary-navy-hover: #1b365d;
+    --accent-orange: #f97c06;
+    --accent-orange-hover: #e97304;
+    --bg-light: #f5f7fa;
+    --card-bg: #ffffff;
+    --border-color: #e2e8f0;
+    --text-dark: #1a202c;
+    --text-muted: #718096;
+}
+
+.main-products-container {
+    max-width: 1200px;
+    margin: 30px auto;
+    padding: 0 20px;
+}
+
+.section-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-dark);
+    text-align: center;
+    margin: 30px 0 20px 0;
+}
+
+.ai-detected-info {
+    text-align: center;
+    font-size: 16px;
+    color: #4a5568;
+    margin-bottom: 25px;
+    font-weight: 500;
+}
+
+.category-badge {
+    background-color: var(--primary-navy);
+    color: #ffffff;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    display: inline-block;
+    text-transform: capitalize;
+}
+
+.error-alert {
+    background-color: #fff5f5;
+    color: #c53030;
+    border: 1px solid #feb2b2;
+    padding: 12px 20px;
+    border-radius: 8px;
+    text-align: center;
+    max-width: 800px;
+    margin: 0 auto 25px auto;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.products-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+.product-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.product-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.08);
+}
+
+.product-image-box {
+    width: 100%;
+    height: 180px;
+    background-color: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+}
+
+.product-image-box img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.product-info {
+    padding: 16px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
+.product-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #2d3748;
+    margin: 0 0 8px 0;
+    line-height: 1.3;
+    height: 38px;
+    overflow: hidden;
+}
+
+.product-price {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--accent-orange);
+    margin: 0 0 15px 0;
+}
+
+.product-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.btn-cart, .btn-view {
+    flex: 1;
+    padding: 8px 0;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 6px;
+    text-align: center;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-cart {
+    background-color: var(--primary-navy);
+    color: #ffffff;
+}
+
+.btn-cart:hover {
+    background-color: var(--primary-navy-hover);
+}
+
+.btn-view {
+    background-color: #edf2f7;
+    color: #4a5568;
+}
+
+.btn-view:hover {
+    background-color: #e2e8f0;
+}
+
+.no-products {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 16px;
+    padding: 40px 0;
+}
+
+@media (max-width: 768px) {
+    .products-grid {
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+}
+</style>
 
 <div class="main-products-container">
     <h1 class="section-title">Visual Image Search Results</h1>

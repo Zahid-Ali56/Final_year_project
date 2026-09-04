@@ -1,37 +1,37 @@
 import os
-import torch                 # Neural network ki heavy calculations/maths
+import torch
 
-from PIL import Image        # user ki taraf se aane wali image files ko open krna 
+# RAM Optimization (PyTorch CPU limits)
+torch.set_num_threads(1)
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+from PIL import Image
 from flask import Flask, request, jsonify
-from transformers import CLIPProcessor, CLIPModel    # images & text/prompts Ai ko samajhne ke liye hi
-
-# -------------------------------------------------------------
-# 1. HUGGING FACE OFFLINE SETTINGS
-# -------------------------------------------------------------
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
+from transformers import CLIPProcessor, CLIPModel
 
 app = Flask(__name__)
 
 # -------------------------------------------------------------
-# 2. LOCAL OFFLINE MODEL LOAD KARNA
+# HYBRID MODEL LOAD LOGIC (Local Folder + Railway Cloud Safe)
 # -------------------------------------------------------------
 MODEL_PATH = os.path.abspath("./clip_local_model")
 
-print("Checking Model Directory:", MODEL_PATH)
+if os.path.exists(MODEL_PATH):
+    print("Loading CLIP Model from LOCAL directory:", MODEL_PATH)
+    model = CLIPModel.from_pretrained(MODEL_PATH, local_files_only=True)
+    processor = CLIPProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
+else:
+    print("Local model folder missing. Downloading lighter CLIP model from HuggingFace...")
+    MODEL_NAME = "openai/clip-vit-base-patch32"
+    model = CLIPModel.from_pretrained(MODEL_NAME)
+    processor = CLIPProcessor.from_pretrained(MODEL_NAME)
 
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(
-        f"Folder '{MODEL_PATH}' nahi mila! Pehle download script chala kar model save karein."
-    )
-
-print("CLIP Model ko local folder se load kiya ja raha hai...")
-model = CLIPModel.from_pretrained(MODEL_PATH, local_files_only=True)
-processor = CLIPProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
-print("Model bina internet ke successfully load ho gaya!")
+model.eval()
+print("CLIP Model Loaded Successfully!")
 
 # -------------------------------------------------------------
-# 3. PROMPTS & KEYWORD MAP
+# PROMPTS & KEYWORD MAP
 # -------------------------------------------------------------
 PROMPTS = [
     "a photo of a shirt, t-shirt, or top clothing",
@@ -55,10 +55,10 @@ KEYWORD_MAP = {
     "a photo of a dress, frock, or skirt": "dress"
 }
 
-# Root route taake 404 error na aaye jab base domain check ho
+# Root route
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({'status': 'AI Service is Active'}), 200
+    return jsonify({'status': 'AI Service is Active', 'model_loaded': True}), 200
 
 # Core prediction logic
 def handle_prediction():
@@ -69,9 +69,11 @@ def handle_prediction():
 
     try:
         image = Image.open(file.stream).convert('RGB')
+        image.thumbnail((224, 224))  # Memory optimization ke liye resize
+
         inputs = processor(text=PROMPTS, images=image, return_tensors="pt", padding=True)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = model(**inputs)
 
         logits_per_image = outputs.logits_per_image 
@@ -92,9 +94,10 @@ def handle_prediction():
         })
 
     except Exception as e:
+        print(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Both endpoints support
+# Endpoint routes
 @app.route('/predict-image', methods=['POST'])
 def predict_image():
     return handle_prediction()
@@ -103,8 +106,7 @@ def predict_image():
 def predict():
     return handle_prediction()
 
-# -------------------------------------------------------------
-# 6. LOCAL SERVER EXECUTION (Host set to 0.0.0.0 for Ngrok)
-# -------------------------------------------------------------
+# Server Execution
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

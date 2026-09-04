@@ -141,6 +141,7 @@ ul.header-nav-list li button.nav-item-btn:hover {
     font-weight: 600;
     line-height: 1.2;
 }
+
 /* ==========================================================================
    ACCOUNT DROPDOWN MENU (CLEAN & MERGED)
    ========================================================================== */
@@ -591,6 +592,7 @@ select {
 .btn-search:hover {
     background: #f3a847;
 }
+
 /* ==========================================================================
    CATEGORY SIDEBAR & TOGGLE BUTTON (WITHOUT !IMPORTANT)
    ========================================================================== */
