@@ -6,6 +6,7 @@ $id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 
 if ($id > 0) {
     // Views increment
+/** @var mysqli $conn */  // $conn neche red underline khtm krne k lye
     mysqli_query($conn, "UPDATE products SET views = views + 1 WHERE id = $id");
 
     // Fetch Product

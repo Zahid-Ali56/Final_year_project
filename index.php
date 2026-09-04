@@ -1,5 +1,4 @@
 <?php include("header.php"); ?>
-
 <?php
 // Check karein ke search query ya category query active hai ya nahi
 $is_searching = isset($_GET['search']) && !empty(trim($_GET['search']));
@@ -12,7 +11,7 @@ $is_category = isset($_GET['category']) && !empty(trim($_GET['category']));
         <button type="button" class="category-toggle-btn" id="catToggleBtn">
             <i class="fa-solid fa-bars"></i>
             <span>CATEGORIES</span>
-            <i class="fa-solid fa-caret-down"></i>
+            <i class="fa-solid fa-caret-down"></i> <!--i use for icons-->
         </button>
 
         <!-- Sidebar Dropdown -->
@@ -76,13 +75,13 @@ $is_category = isset($_GET['category']) && !empty(trim($_GET['category']));
     <?php
     // Base Query setup
     $where_clauses = array();
-
+    /** @var mysqli $conn */  // $conn neche red underline khtm krne k lye
     if ($is_searching) {
         $search = mysqli_real_escape_string($conn, trim($_GET['search']));
 
         // Search History Log
         if (isset($_SESSION['user'])) {
-            $user_id = intval($_SESSION['user']);
+            $user_id = intval($_SESSION['user']);  #intval integer typecasting for security
             mysqli_query($conn, "INSERT INTO search_history (user_id, search_term) VALUES ('$user_id', '$search')");
         }
 
